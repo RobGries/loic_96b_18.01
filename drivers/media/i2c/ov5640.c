@@ -765,7 +765,7 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
  * This is supposed to be ranging from 1 to 2, but the value is always
  * set to 1 in the vendor kernels.
  */
-#define OV5640_PLL_ROOT_DIV	1
+#define OV5640_PLL_ROOT_DIV	2
 
 /*
  * This is supposed to be ranging from 1 to 8, but the value is always
@@ -876,12 +876,8 @@ static int ov5640_set_mipi_pclk(struct ov5640_dev *sensor, unsigned long rate)
 	unsigned long pclk;
 	int ret;
 
-	pclk = ov5640_calc_pclk(sensor, rate, &sysdiv, &prediv, &pll_rdiv, &mult,
-				&sclk_rdiv, &pclk_rdiv);
-
-	ret = __v4l2_ctrl_s_ctrl_int64(sensor->ctrls.pixel_clock, pclk);
-	if (ret < 0)
-		 return ret;
+	pclk = ov5640_calc_pclk(sensor, rate, &sysdiv, &prediv, &pll_rdiv,
+				&mult, &sclk_rdiv, &pclk_rdiv);
 
 	ret = ov5640_write_reg(sensor, OV5640_REG_SC_PLL_CTRL1,
 			       (sysdiv << 4) | pclk_rdiv);
@@ -1638,13 +1634,16 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 	 * which is 1 byte per pixel.
 	 */
 	bpp = sensor->fmt.code == MEDIA_BUS_FMT_JPEG_1X8 ? 1 : 2;
-	rate = mode->vtot * mode->htot * bpp;
-	rate *= ov5640_framerates[sensor->current_fr];
+	rate = mode->vtot * mode->htot * ov5640_framerates[sensor->current_fr];
+
+	ret = __v4l2_ctrl_s_ctrl_int64(sensor->ctrls.pixel_clock, rate);
+	if (ret < 0)
+		 return ret;
 
 	if (sensor->ep.bus_type == V4L2_MBUS_CSI2) {
-		rate = rate / sensor->ep.bus.mipi_csi2.num_data_lanes;
 		ret = ov5640_set_mipi_pclk(sensor, rate);
 	} else {
+		rate *= bpp;
 		ret = ov5640_set_dvp_pclk(sensor, rate);
 	}
 
@@ -2658,6 +2657,8 @@ static int ov5640_probe(struct i2c_client *client,
 		dev_err(dev, "failed to get xclk\n");
 		return PTR_ERR(sensor->xclk);
 	}
+
+	clk_set_rate(sensor->xclk, 23880000);
 
 	sensor->xclk_freq = clk_get_rate(sensor->xclk);
 	if (sensor->xclk_freq < OV5640_XCLK_MIN ||
