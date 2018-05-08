@@ -1290,7 +1290,7 @@ static int ov5640_binning_on(struct ov5640_dev *sensor)
 	ret = ov5640_read_reg(sensor, OV5640_REG_TIMING_TC_REG21, &temp);
 	if (ret)
 		return ret;
-	temp &= 0xfe;
+	temp &= 0x01;
 	return temp ? 1 : 0;
 }
 
