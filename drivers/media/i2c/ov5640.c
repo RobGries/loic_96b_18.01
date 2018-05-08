@@ -151,15 +151,6 @@ static const char * const ov5640_supply_name[] = {
 
 #define OV5640_NUM_SUPPLIES ARRAY_SIZE(ov5640_supply_name)
 
-/*
- * Image size under 1280 * 960 are SUBSAMPLING
- * Image size upper 1280 * 960 are SCALING
- */
-enum ov5640_downsize_mode {
-	SUBSAMPLING,
-	SCALING,
-};
-
 struct reg_value {
 	u16 reg_addr;
 	u8 val;
@@ -169,7 +160,8 @@ struct reg_value {
 
 struct ov5640_mode_info {
 	enum ov5640_mode_id id;
-	enum ov5640_downsize_mode dn_mode;
+	bool scaling; /* Mode uses ISP scaler (reg 0x5001,BIT(5)=='1') */
+	bool binning; /* Mode uses analog binning (reg 0x3821,BIT(0)=='1') */
 	u32 hact;
 	u32 htot;
 	u32 vact;
@@ -526,46 +518,46 @@ static const struct reg_value ov5640_setting_QSXGA_2592_1944[] = {
 
 /* power-on sensor init reg table */
 static const struct ov5640_mode_info ov5640_mode_init_data = {
-	0, SUBSAMPLING, 640, 1896, 480, 984,
+	0, 1, 1, 640, 1896, 480, 984,
 	ov5640_init_setting_30fps_VGA,
 	ARRAY_SIZE(ov5640_init_setting_30fps_VGA),
 };
 
 static const struct ov5640_mode_info
 ov5640_mode_data[OV5640_NUM_MODES] = {
-	{OV5640_MODE_QCIF_176_144, SUBSAMPLING,
+	{OV5640_MODE_QCIF_176_144, 1, 1,
 	 176, 1896, 144, 984,
 	 ov5640_setting_QCIF_176_144,
 	 ARRAY_SIZE(ov5640_setting_QCIF_176_144)},
-	{OV5640_MODE_QVGA_320_240, SUBSAMPLING,
+	{OV5640_MODE_QVGA_320_240, 1, 1,
 	 320, 1896, 240, 984,
 	 ov5640_setting_QVGA_320_240,
 	 ARRAY_SIZE(ov5640_setting_QVGA_320_240)},
-	{OV5640_MODE_VGA_640_480, SUBSAMPLING,
+	{OV5640_MODE_VGA_640_480, 1, 1,
 	 640, 1896, 480, 1080,
 	 ov5640_setting_VGA_640_480,
 	 ARRAY_SIZE(ov5640_setting_VGA_640_480)},
-	{OV5640_MODE_NTSC_720_480, SUBSAMPLING,
+	{OV5640_MODE_NTSC_720_480, 1, 1,
 	 720, 1896, 480, 984,
 	 ov5640_setting_NTSC_720_480,
 	 ARRAY_SIZE(ov5640_setting_NTSC_720_480)},
-	{OV5640_MODE_PAL_720_576, SUBSAMPLING,
+	{OV5640_MODE_PAL_720_576, 1, 1,
 	 720, 1896, 576, 984,
 	 ov5640_setting_PAL_720_576,
 	 ARRAY_SIZE(ov5640_setting_PAL_720_576)},
-	{OV5640_MODE_XGA_1024_768, SUBSAMPLING,
+	{OV5640_MODE_XGA_1024_768, 1, 1,
 	 1024, 1896, 768, 1080,
 	 ov5640_setting_XGA_1024_768,
 	 ARRAY_SIZE(ov5640_setting_XGA_1024_768)},
-	{OV5640_MODE_720P_1280_720, SUBSAMPLING,
+	{OV5640_MODE_720P_1280_720, 0, 1,
 	 1280, 1892, 720, 740,
 	 ov5640_setting_720P_1280_720,
 	 ARRAY_SIZE(ov5640_setting_720P_1280_720)},
-	{OV5640_MODE_1080P_1920_1080, SCALING,
+	{OV5640_MODE_1080P_1920_1080, 0, 0,
 	 1920, 2500, 1080, 1120,
 	 ov5640_setting_1080P_1920_1080,
 	 ARRAY_SIZE(ov5640_setting_1080P_1920_1080)},
-	{OV5640_MODE_QSXGA_2592_1944, SCALING,
+	{OV5640_MODE_QSXGA_2592_1944, 0, 0,
 	 2592, 2844, 1944, 1968,
 	 ov5640_setting_QSXGA_2592_1944,
 	 ARRAY_SIZE(ov5640_setting_QSXGA_2592_1944)},
@@ -1584,14 +1576,14 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 			   const struct ov5640_mode_info *orig_mode)
 {
 	const struct ov5640_mode_info *mode = sensor->current_mode;
-	enum ov5640_downsize_mode dn_mode, orig_dn_mode;
+	bool binning, orig_binning;
 	unsigned long rate;
 	unsigned char bpp;
 	s32 exposure;
 	int ret;
 
-	dn_mode = mode->dn_mode;
-	orig_dn_mode = orig_mode->dn_mode;
+	binning = mode->binning;
+	orig_binning = orig_mode->binning;
 
 	/* auto gain and exposure must be turned off when changing modes */
 	ret = __v4l2_ctrl_s_ctrl(sensor->ctrls.auto_gain, 0);
@@ -1618,8 +1610,8 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 	if (ret < 0)
 		return 0;
 
-	if ((dn_mode == SUBSAMPLING && orig_dn_mode == SCALING) ||
-	    (dn_mode == SCALING && orig_dn_mode == SUBSAMPLING)) {
+	if ((binning && !orig_binning) ||
+	    (!binning && orig_binning)) {
 		/*
 		 * change between subsampling and scaling
 		 * go through exposure calucation
