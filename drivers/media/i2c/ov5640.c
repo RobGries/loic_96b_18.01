@@ -47,6 +47,7 @@
 #define OV5640_REG_SC_PLL_CTRL1		0x3035
 #define OV5640_REG_SC_PLL_CTRL2		0x3036
 #define OV5640_REG_SC_PLL_CTRL3		0x3037
+#define OV5640_REG_SC_PLLS_CTRL3	0x303d
 #define OV5640_REG_SLAVE_ID		0x3100
 #define OV5640_REG_SCCB_SYS_CTRL1	0x3103
 #define OV5640_REG_SYS_ROOT_DIVIDER	0x3108
@@ -84,6 +85,7 @@
 #define OV5640_REG_POLARITY_CTRL00	0x4740
 #define OV5640_REG_MIPI_CTRL00		0x4800
 #define OV5640_REG_DEBUG_MODE		0x4814
+#define OV5640_REG_PCLK_PERIOD		0x4837
 #define OV5640_REG_ISP_CTRL03		0x5003
 #define OV5640_REG_PRE_ISP_TEST_SET1	0x503d
 #define OV5640_REG_ISP_FORMAT_MUX_CTRL	0x501f
@@ -693,6 +695,8 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
 }
 
 /*
+ * FOR DVP MODE:
+ *
  * After spending way too much time trying the various combinations, I
  * believe the clock tree is as follows:
  *
@@ -735,6 +739,29 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
  */
 
 /*
+ * FOR MIPI MODE:
+ *
+ * Tests run while the sensor is in MIPI mode suggest that the tree is
+ * different than described above. Rather than try to depict the tree,
+ * here are equations that define 3 clocks which have been found to be
+ * relevant while in MIPI mode:
+ *
+ * xclk / prediv * pll_mult / sysdiv / mipi_div = MIPI RATE
+ *
+ * xclk / prediv * pll_mult / sysdiv / pll_rdiv / bit_div /
+ * sclk_div = SCLK
+ *
+ * xclk / prediv * pll_mult / sysdiv / pll_rdiv / bit_div /
+ * pclk_div / mipi_div = PCLK
+ *
+ * In order for the sensor to operate correctly the ratio of
+ * SCLK:PCLK:MIPI RATE must be 1:2:8 when the scalar in the ISP is not
+ * enabled, and 1:1:4 when it is enabled. The ratio of these different
+ * clocks is maintained by the constant div values below, with mipi_div
+ * being selected based on if the mode is using the scalar.
+ */
+
+/*
  * This is supposed to be ranging from 1 to 16, but the value is
  * always set to either 1 or 2 in the vendor kernels.
  */
@@ -754,7 +781,8 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
  * This is supposed to be ranging from 1 to 2, but the value is always
  * set to 1 in the vendor kernels.
  */
-#define OV5640_PLL_ROOT_DIV	1
+#define OV5640_PLL_DVP_ROOT_DIV		1
+#define OV5640_PLL_MIPI_ROOT_DIV	2
 
 /*
  * This is supposed to be ranging from 1 to 8, but the value is always
@@ -768,6 +796,14 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
  */
 #define OV5640_PCLK_ROOT_DIV	1
 
+/*
+ * This is equal to the MIPI bit rate divided by 4. Now it is hardcoded to
+ * only work with 8-bit formats, so this value will need to be set in
+ * software if support for 10-bit formats is added. The bit divider is
+ * only active when in MIPI mode (not DVP)
+ */
+#define OV5640_BIT_DIV		2
+
 static unsigned long ov5640_compute_sclk(struct ov5640_dev *sensor,
 					 u8 sys_div, u8 pll_prediv,
 					 u8 pll_mult, u8 pll_div,
@@ -775,14 +811,16 @@ static unsigned long ov5640_compute_sclk(struct ov5640_dev *sensor,
 {
 	unsigned long rate = clk_get_rate(sensor->xclk);
 
-	rate = rate / pll_prediv / sys_div * pll_mult / pll_div;
+	rate = rate / pll_prediv * pll_mult / sys_div / pll_div;
+	if (sensor->ep.bus_type == V4L2_MBUS_CSI2)
+		rate = rate / OV5640_BIT_DIV;
 
 	return rate / sclk_div;
 }
 
 static unsigned long ov5640_calc_sclk(struct ov5640_dev *sensor,
 				      unsigned long rate,
-				      u8 *sysdiv, u8 *prediv, u8 *pll_rdiv,
+				      u8 *sysdiv, u8 *prediv, u8 pll_rdiv,
 				      u8 *mult, u8 *sclk_rdiv)
 {
 	unsigned long best = ~0;
@@ -807,7 +845,7 @@ static unsigned long ov5640_calc_sclk(struct ov5640_dev *sensor,
 			_rate = ov5640_compute_sclk(sensor, _sysdiv,
 						    OV5640_PLL_PREDIV,
 						    _pll_mult,
-						    OV5640_PLL_ROOT_DIV,
+						    pll_rdiv,
 						    OV5640_SCLK_ROOT_DIV);
 
 			if (abs(rate - _rate) < abs(rate - best)) {
@@ -824,7 +862,6 @@ static unsigned long ov5640_calc_sclk(struct ov5640_dev *sensor,
 out:
 	*sysdiv = best_sysdiv;
 	*prediv = OV5640_PLL_PREDIV;
-	*pll_rdiv = OV5640_PLL_ROOT_DIV;
 	*mult = best_mult;
 	*sclk_rdiv = OV5640_SCLK_ROOT_DIV;
 	return best;
@@ -832,13 +869,52 @@ out:
 
 static int ov5640_set_sclk(struct ov5640_dev *sensor, unsigned long rate)
 {
-	u8 sysdiv, prediv, mult, pll_rdiv, sclk_rdiv;
+	u8 sysdiv, prediv, mult, pll_rdiv, sclk_rdiv, mipi_div, pll2_div;
+	u8 pclk_period;
 	int ret;
+	unsigned long sclk, pclk, adcclk;
 
-	ov5640_calc_sclk(sensor, rate, &sysdiv, &prediv, &pll_rdiv, &mult,
-			 &sclk_rdiv);
+	pll_rdiv = (sensor->ep.bus_type == V4L2_MBUS_CSI2) ?
+		   OV5640_PLL_MIPI_ROOT_DIV : OV5640_PLL_DVP_ROOT_DIV;
+
+	sclk = ov5640_calc_sclk(sensor, rate, &sysdiv, &prediv, pll_rdiv,
+				&mult, &sclk_rdiv);
+
+	if (sensor->ep.bus_type == V4L2_MBUS_CSI2) {
+		mipi_div = (sensor->current_mode->scaling) ? 2 : 1;
+
+		/*
+		 * Calculate pclk period * number of CSI2 lanes in ns for MIPI
+		 * timing.
+		 */
+		pclk = sclk * sclk_rdiv / mipi_div;
+		pclk_period = (u8) ((1000000000UL + pclk/2UL) / pclk);
+		pclk_period = pclk_period *
+			      sensor->ep.bus.mipi_csi2.num_data_lanes;
+		ret = ov5640_write_reg(sensor, OV5640_REG_PCLK_PERIOD,
+				    pclk_period);
+		if (ret)
+			return ret;
+
+		/*
+		 * If pclk is larger than the PLL2 generated ADC CLK, it seems
+		 * the rate of the ADC CLK needs to be increased. For now, an
+		 * acceptable approach seems to be to just double the ADC clock
+		 * if this condition is detected. Note the default pll2 pre div
+		 * (3) and multiplier (25) are used in the equation below.
+		 */
+		adcclk = clk_get_rate(sensor->xclk) / 3 * 25;
+		pll2_div = (adcclk <= pclk) ? 1 : 3; // 1=1.5, 3=3
+		ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLLS_CTRL3,
+				     0x30, (pll2_div & 0x03) << 4);
+		if (ret)
+			return ret;
+	} else {
+		mipi_div = 1;
+	}
+
 	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL1,
-			     0xf0, sysdiv << 4);
+			     0xff, (sysdiv << 4) | (mipi_div & 0x0f));
 	if (ret)
 		return ret;
 
