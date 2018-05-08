@@ -1577,7 +1577,7 @@ static int ov5640_set_mode_direct(struct ov5640_dev *sensor,
 	if (ret)
 		return ret;
 
-	return __v4l2_ctrl_s_ctrl(sensor->ctrls.auto_exp, exposure);
+	return 0;
 }
 
 static int ov5640_set_mode(struct ov5640_dev *sensor,
@@ -1599,7 +1599,7 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 		return ret;
 
 	exposure = sensor->ctrls.auto_exp->val;
-	ret = ov5640_set_exposure(sensor, V4L2_EXPOSURE_MANUAL);
+	ret = __v4l2_ctrl_s_ctrl(sensor->ctrls.auto_exp, V4L2_EXPOSURE_MANUAL);
 	if (ret)
 		return ret;
 
@@ -1636,8 +1636,9 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 	if (ret < 0)
 		return ret;
 
-
-
+	ret = __v4l2_ctrl_s_ctrl(sensor->ctrls.auto_exp, exposure);
+	if (ret)
+		return ret;
 	ret = ov5640_set_ae_target(sensor, sensor->ae_target);
 	if (ret < 0)
 		return ret;
