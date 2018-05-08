@@ -84,6 +84,7 @@
 #define OV5640_REG_FORMAT_CONTROL00	0x4300
 #define OV5640_REG_POLARITY_CTRL00	0x4740
 #define OV5640_REG_MIPI_CTRL00		0x4800
+#define OV5640_REG_MIPI_CTRL05		0x4805
 #define OV5640_REG_DEBUG_MODE		0x4814
 #define OV5640_REG_PCLK_PERIOD		0x4837
 #define OV5640_REG_ISP_CTRL03		0x5003
@@ -281,6 +282,7 @@ static const struct reg_value ov5640_init_setting_30fps_VGA[] = {
 	{0x501f, 0x00, 0, 0}, {0x4713, 0x03, 0, 0}, {0x4407, 0x04, 0, 0},
 	{0x440e, 0x00, 0, 0}, {0x460b, 0x35, 0, 0}, {0x460c, 0x22, 0, 0},
 	{0x4837, 0x0a, 0, 0}, {0x4800, 0x04, 0, 0}, {0x3824, 0x02, 0, 0},
+	{0x4805, 0xd0, 0, 0},
 	{0x5000, 0xa7, 0, 0}, {0x5001, 0xa3, 0, 0}, {0x5180, 0xff, 0, 0},
 	{0x5181, 0xf2, 0, 0}, {0x5182, 0x00, 0, 0}, {0x5183, 0x14, 0, 0},
 	{0x5184, 0x25, 0, 0}, {0x5185, 0x24, 0, 0}, {0x5186, 0x09, 0, 0},
@@ -1129,6 +1131,10 @@ static int ov5640_set_stream_mipi(struct ov5640_dev *sensor, bool on)
 {
 	int ret;
 
+	ret = ov5640_mod_reg(sensor, OV5640_REG_MIPI_CTRL05, (BIT(7) | BIT(6)),
+			     on ? 0 : (BIT(7) | BIT(6)));
+	if (ret)
+		return ret;
 	ret = ov5640_mod_reg(sensor, OV5640_REG_MIPI_CTRL00, BIT(5),
 			     on ? 0 : BIT(5));
 	if (ret)
