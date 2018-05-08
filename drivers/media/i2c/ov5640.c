@@ -1438,6 +1438,9 @@ static int ov5640_set_mode_exposure_calc(struct ov5640_dev *sensor,
 	ret = ov5640_load_regs(sensor, mode);
 	if (ret < 0)
 		return ret;
+	ret = ov5640_set_timings(sensor, mode);
+	if (ret < 0)
+		return ret;
 
 	/* read capture VTS */
 	ret = ov5640_get_vts(sensor);
@@ -1565,6 +1568,9 @@ static int ov5640_set_mode_direct(struct ov5640_dev *sensor,
 	ret = ov5640_load_regs(sensor, mode);
 	if (ret < 0)
 		return ret;
+	ret = ov5640_set_timings(sensor, mode);
+	if (ret < 0)
+		return ret;
 
 	/* turn auto gain/exposure back on for direct mode */
 	ret = __v4l2_ctrl_s_ctrl(sensor->ctrls.auto_gain, 1);
@@ -1630,9 +1636,7 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 	if (ret < 0)
 		return ret;
 
-	ret = ov5640_set_timings(sensor, mode);
-	if (ret < 0)
-		return ret;
+
 
 	ret = ov5640_set_ae_target(sensor, sensor->ae_target);
 	if (ret < 0)
