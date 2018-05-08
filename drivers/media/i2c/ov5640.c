@@ -94,8 +94,6 @@
 #define OV5640_REG_SDE_CTRL5		0x5585
 #define OV5640_REG_AVG_READOUT		0x56a1
 
-#define OV5640_SCLK2X_ROOT_DIVIDER_DEFAULT	1
-
 enum ov5640_mode_id {
 	OV5640_MODE_QCIF_176_144 = 0,
 	OV5640_MODE_QVGA_320_240,
@@ -749,7 +747,7 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
  * always set to either 1 or 2 in the vendor kernels.
  */
 #define OV5640_SYSDIV_MIN	1
-#define OV5640_SYSDIV_MAX	2
+#define OV5640_SYSDIV_MAX	4
 
 /*
  * This is supposed to be ranging from 1 to 8, but the value is always
@@ -778,22 +776,22 @@ static int ov5640_mod_reg(struct ov5640_dev *sensor, u16 reg,
  */
 #define OV5640_PCLK_ROOT_DIV	1
 
-static unsigned long ov5640_compute_pclk(struct ov5640_dev *sensor,
+static unsigned long ov5640_compute_sclk(struct ov5640_dev *sensor,
 					 u8 sys_div, u8 pll_prediv,
 					 u8 pll_mult, u8 pll_div,
-					 u8 sclk_div, u8 pclk_div)
+					 u8 sclk_div)
 {
 	unsigned long rate = clk_get_rate(sensor->xclk);
 
-	rate = rate / sys_div / pll_prediv * pll_mult / pll_div;
+	rate = rate / pll_prediv / sys_div * pll_mult / pll_div;
 
-	return rate / sclk_div / pclk_div;
+	return rate / sclk_div;
 }
 
-static unsigned long ov5640_calc_pclk(struct ov5640_dev *sensor,
+static unsigned long ov5640_calc_sclk(struct ov5640_dev *sensor,
 				      unsigned long rate,
 				      u8 *sysdiv, u8 *prediv, u8 *pll_rdiv,
-				      u8 *mult, u8 *sclk_rdiv, u8 *pclk_rdiv)
+				      u8 *mult, u8 *sclk_rdiv)
 {
 	unsigned long best = ~0;
 	u8 best_sysdiv = 1, best_mult = 1;
@@ -811,15 +809,14 @@ static unsigned long ov5640_calc_pclk(struct ov5640_dev *sensor,
 			 * The PLL multiplier cannot be odd if above
 			 * 127.
 			 */
-			if (_pll_mult > 127 && !(_pll_mult % 2))
+			if (_pll_mult > 127 && (_pll_mult % 2))
 				continue;
 
-			_rate = ov5640_compute_pclk(sensor, _sysdiv,
+			_rate = ov5640_compute_sclk(sensor, _sysdiv,
 						    OV5640_PLL_PREDIV,
 						    _pll_mult,
 						    OV5640_PLL_ROOT_DIV,
-						    OV5640_SCLK_ROOT_DIV,
-						    OV5640_PCLK_ROOT_DIV);
+						    OV5640_SCLK_ROOT_DIV);
 
 			if (abs(rate - _rate) < abs(rate - best)) {
 				best = _rate;
@@ -838,17 +835,16 @@ out:
 	*pll_rdiv = OV5640_PLL_ROOT_DIV;
 	*mult = best_mult;
 	*sclk_rdiv = OV5640_SCLK_ROOT_DIV;
-	*pclk_rdiv = OV5640_PCLK_ROOT_DIV;
 	return best;
 }
 
-static int ov5640_set_dvp_pclk(struct ov5640_dev *sensor, unsigned long rate)
+static int ov5640_set_sclk(struct ov5640_dev *sensor, unsigned long rate)
 {
-	u8 sysdiv, prediv, mult, pll_rdiv, sclk_rdiv, pclk_rdiv;
+	u8 sysdiv, prediv, mult, pll_rdiv, sclk_rdiv;
 	int ret;
 
-	ov5640_calc_pclk(sensor, rate, &sysdiv, &prediv, &pll_rdiv, &mult,
-			 &sclk_rdiv, &pclk_rdiv);
+	ov5640_calc_sclk(sensor, rate, &sysdiv, &prediv, &pll_rdiv, &mult,
+			 &sclk_rdiv);
 	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL1,
 			     0xf0, sysdiv << 4);
 	if (ret)
@@ -860,39 +856,14 @@ static int ov5640_set_dvp_pclk(struct ov5640_dev *sensor, unsigned long rate)
 		return ret;
 
 	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL3,
-			     0xff, prediv | ((pll_rdiv - 1) << 4));
+			     0x1f, prediv | ((pll_rdiv - 1) << 4));
 	if (ret)
 		return ret;
 
-	return ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER, 0x33,
-			      (ilog2(pclk_rdiv) << 4) |
-			      ilog2(OV5640_SCLK_ROOT_DIV));
-}
-
-static int ov5640_set_mipi_pclk(struct ov5640_dev *sensor, unsigned long rate)
-{
-	u8 sysdiv, prediv, mult, pll_rdiv, sclk_rdiv, pclk_rdiv;
-	int ret;
-
-	ov5640_calc_pclk(sensor, rate, &sysdiv, &prediv, &pll_rdiv, &mult,
-			 &sclk_rdiv, &pclk_rdiv);
-	ret = ov5640_write_reg(sensor, OV5640_REG_SC_PLL_CTRL1,
-			       (sysdiv << 4) | pclk_rdiv);
-	if (ret)
-		return ret;
-
-	ret = ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL2,
-			     0xff, mult);
-	if (ret)
-		return ret;
-
-	ret = ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER, 0x3,
-			     ilog2(sclk_rdiv));
-	if (ret)
-		return ret;
-
-	return ov5640_mod_reg(sensor, OV5640_REG_SC_PLL_CTRL3,
-			      0xff, prediv | ((pll_rdiv - 1) << 4));
+	return ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER, 0x3F,
+			      (ilog2(OV5640_PCLK_ROOT_DIV) << 4) |
+			      (ilog2(sclk_rdiv/2) << 2) |
+			      ilog2(sclk_rdiv));
 }
 
 /* download ov5640 settings to sensor through i2c */
@@ -1634,13 +1605,10 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 	rate = mode->vtot * mode->htot * bpp;
 	rate *= ov5640_framerates[sensor->current_fr];
 
-	if (sensor->ep.bus_type == V4L2_MBUS_CSI2) {
+	if (sensor->ep.bus_type == V4L2_MBUS_CSI2)
 		rate = rate / sensor->ep.bus.mipi_csi2.num_data_lanes;
-		ret = ov5640_set_mipi_pclk(sensor, rate);
-	} else {
-		ret = ov5640_set_dvp_pclk(sensor, rate);
-	}
 
+	ret = ov5640_set_sclk(sensor, rate);
 	if (ret < 0)
 		return 0;
 
@@ -1698,7 +1666,8 @@ static int ov5640_restore_mode(struct ov5640_dev *sensor)
 		return ret;
 
 	ret = ov5640_mod_reg(sensor, OV5640_REG_SYS_ROOT_DIVIDER, 0x3f,
-			     (ilog2(OV5640_SCLK2X_ROOT_DIVIDER_DEFAULT) << 2) |
+			     (ilog2(OV5640_PCLK_ROOT_DIV) << 4) |
+			     (ilog2(OV5640_SCLK_ROOT_DIV/2) << 2) |
 			     ilog2(OV5640_SCLK_ROOT_DIV));
 	if (ret)
 		return ret;
