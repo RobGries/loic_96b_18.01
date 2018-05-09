@@ -1686,7 +1686,7 @@ static int ov5640_set_mode(struct ov5640_dev *sensor,
 	rate = mode->vtot * mode->htot * bpp;
 	rate *= ov5640_framerates[sensor->current_fr];
 
-	ret = __v4l2_ctrl_s_ctrl_int64(sensor->ctrls.pixel_clock, rate / bpp);
+	ret = __v4l2_ctrl_s_ctrl_int64(sensor->ctrls.pixel_clock, rate);
 	if (ret < 0)
 		 return ret;
 
